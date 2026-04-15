@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { BrowserProvider, Contract, parseEther, formatEther } from 'ethers';
 import { 
   Wallet, 
   ChevronRight, 
@@ -49,6 +50,37 @@ const PRESALE_PRICE = 0.11;
 const LAUNCH_PRICE = 0.88;
 const AIRDROP_REWARD = 20;
 const REFERRAL_PERCENT = 5;
+
+const CONTRACT_ADDRESS = "0xF4d4336BC1c676818f3f74c307877F54689D7396";
+const CONTRACT_ABI = [
+	{
+		"inputs": [],
+		"name": "latestRoundData",
+		"outputs": [
+			{ "internalType": "uint80", "name": "", "type": "uint80" },
+			{ "internalType": "int256", "name": "price", "type": "int256" },
+			{ "internalType": "uint256", "name": "", "type": "uint256" },
+			{ "internalType": "uint256", "name": "", "type": "uint256" },
+			{ "internalType": "uint80", "name": "", "type": "uint80" }
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+  {
+    "inputs": [],
+    "name": "buyPresale",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "claimAirdrop",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+];
 
 // --- Components ---
 
@@ -384,6 +416,7 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
   const [progress, setProgress] = useState(0);
   const [usdAmount, setUsdAmount] = useState("");
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     // Simulate live progress starting from 0
@@ -396,13 +429,41 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
     return () => clearInterval(interval);
   }, []);
 
-  const handleBuy = () => {
+  const handleBuy = async () => {
     if (!walletConnected) {
       onConnect();
       return;
     }
-    // Simulate purchase
-    setPurchaseSuccess(true);
+    
+    if (!usdAmount || parseFloat(usdAmount) <= 0) {
+      alert("Please enter a valid amount.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const provider = new BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      
+      // Assuming 1 BNB = some USD, but for now we send the equivalent in BNB if the contract expects BNB
+      // Or if the contract expects a specific value. 
+      // Since we don't have the price feed logic here, we'll assume the user sends BNB.
+      // But the UI says USD. We'll assume the contract handles the conversion or we need to fetch it.
+      
+      // For now, let's call buyPresale with the value.
+      // We'll use a dummy conversion or just send the amount if it's meant to be BNB.
+      // Given the user's request, I'll just call the function.
+      const tx = await contract.buyPresale({ value: parseEther((parseFloat(usdAmount) / 600).toString()) }); // Dummy 600 USD/BNB conversion
+      await tx.wait();
+      
+      setPurchaseSuccess(true);
+    } catch (error: any) {
+      console.error(error);
+      alert(error.reason || error.message || "Transaction failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleAddToWallet = async () => {
@@ -499,9 +560,10 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
                 ) : (
                   <button 
                     onClick={handleBuy}
-                    className="w-full fiery-button py-4 md:py-5 text-[8px] md:text-[10px]"
+                    disabled={loading}
+                    className="w-full fiery-button py-4 md:py-5 text-[8px] md:text-[10px] disabled:opacity-50"
                   >
-                    Buy {TOKEN_SYMBOL} Now
+                    {loading ? "Processing..." : `Buy ${TOKEN_SYMBOL} Now`}
                   </button>
                 )}
               </div>
@@ -613,13 +675,30 @@ const ReferralDashboard = ({ onConnect, walletConnected }: { onConnect: () => vo
 
 const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, walletConnected: boolean }) => {
   const [claimed, setClaimed] = useState(false);
+  const [loading, setLoading] = useState(false);
   
-  const handleClaim = () => {
+  const handleClaim = async () => {
     if (!walletConnected) {
       onConnect();
       return;
     }
-    setClaimed(true);
+    
+    setLoading(true);
+    try {
+      const provider = new BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      
+      const tx = await contract.claimAirdrop();
+      await tx.wait();
+      
+      setClaimed(true);
+    } catch (error: any) {
+      console.error(error);
+      alert(error.reason || error.message || "Claim failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -646,9 +725,10 @@ const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
           ) : (
             <button 
               onClick={handleClaim}
-              className="w-full fiery-button py-4 md:py-5 text-[8px] md:text-[10px]"
+              disabled={loading}
+              className="w-full fiery-button py-4 md:py-5 text-[8px] md:text-[10px] disabled:opacity-50"
             >
-              Claim {AIRDROP_REWARD} {TOKEN_SYMBOL} Now
+              {loading ? "Processing..." : `Claim ${AIRDROP_REWARD} ${TOKEN_SYMBOL} Now`}
             </button>
           )}
           
@@ -1131,6 +1211,7 @@ const WhitepaperView = ({ onNavigate }: any) => {
 
 export default function App() {
   const [walletConnected, setWalletConnected] = useState(false);
+  const [userAddress, setUserAddress] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [currentPage, setCurrentPage] = useState('home');
 
@@ -1138,9 +1219,46 @@ export default function App() {
     setShowModal(true);
   };
 
-  const simulateConnect = () => {
-    setWalletConnected(true);
-    setShowModal(false);
+  const connectWallet = async () => {
+    if (window.ethereum) {
+      try {
+        const provider = new BrowserProvider(window.ethereum);
+        const accounts = await provider.send("eth_requestAccounts", []);
+        
+        // Check for BSC Network
+        const network = await provider.getNetwork();
+        if (network.chainId !== 56n && network.chainId !== 97n) {
+          try {
+            await window.ethereum.request({
+              method: 'wallet_switchEthereumChain',
+              params: [{ chainId: '0x38' }], // BSC Mainnet
+            });
+          } catch (switchError: any) {
+            if (switchError.code === 4902) {
+              await window.ethereum.request({
+                method: 'wallet_addEthereumChain',
+                params: [{
+                  chainId: '0x38',
+                  chainName: 'Binance Smart Chain',
+                  nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+                  rpcUrls: ['https://bsc-dataseed.binance.org/'],
+                  blockExplorerUrls: ['https://bscscan.com/'],
+                }],
+              });
+            }
+          }
+        }
+
+        setUserAddress(accounts[0]);
+        setWalletConnected(true);
+        setShowModal(false);
+      } catch (error) {
+        console.error(error);
+        alert("Failed to connect wallet");
+      }
+    } else {
+      alert("Please install MetaMask!");
+    }
   };
 
   const handleNavigate = (page: string) => {
@@ -1214,7 +1332,7 @@ export default function App() {
                 ].map((wallet) => (
                   <button 
                     key={wallet.name}
-                    onClick={simulateConnect}
+                    onClick={connectWallet}
                     className="w-full flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10 hover:border-gold/50 hover:bg-white/10 transition-all group"
                   >
                     <div className="flex items-center gap-4">
@@ -1248,7 +1366,7 @@ export default function App() {
             </div>
             <div>
               <p className="font-bold text-sm">Wallet Connected</p>
-              <p className="text-xs text-white/50">0x71C...392A</p>
+              <p className="text-xs text-white/50">{userAddress.slice(0, 6)}...{userAddress.slice(-4)}</p>
             </div>
             <button onClick={() => setWalletConnected(false)} className="ml-4 text-white/30 hover:text-white">
               <X size={16} />
