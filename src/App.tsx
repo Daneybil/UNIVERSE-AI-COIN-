@@ -421,7 +421,7 @@ const AboutSection = () => {
   );
 };
 
-const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, walletConnected: boolean }) => {
+const Presale = ({ onConnect, walletConnected, showNotify }: { onConnect: () => void, walletConnected: boolean, showNotify: (m: string, t?: any) => void }) => {
   const [progress, setProgress] = useState(0);
   const [usdAmount, setUsdAmount] = useState("");
   const [purchaseSuccess, setPurchaseSuccess] = useState(false);
@@ -445,22 +445,25 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
     }
     
     if (!usdAmount || parseFloat(usdAmount) <= 0) {
-      alert("Please enter a valid amount.");
+      showNotify("Please enter a valid amount.", "error");
       return;
     }
 
     setLoading(true);
     try {
-      if (!window.ethereum) throw new Error("No crypto wallet found");
+      console.log("Starting purchase process...");
+      if (!window.ethereum) {
+        throw new Error("MetaMask or compatible wallet not found. Please open in a crypto browser.");
+      }
       
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       
-      // 1. Get BNB Price (Fallback to 600 if call fails)
+      // 1. Get BNB Price
       let bnbPrice = 600;
       try {
-        console.log("Fetching BNB price...");
+        console.log("Fetching BNB price from contract...");
         const roundData = await contract.latestRoundData();
         bnbPrice = Number(roundData.price) / 1e8;
         console.log("Current BNB Price:", bnbPrice);
@@ -477,25 +480,53 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
       const urlParams = new URLSearchParams(window.location.search);
       const referrer = urlParams.get('ref') || "0x0000000000000000000000000000000000000000";
       
-      console.log("Initiating buyPresale transaction...");
+      console.log("Initiating buyPresale transaction with referrer:", referrer);
+      showNotify("Preparing transaction...", "info");
       
-      // Try calling with referrer first, then fallback to parameterless if it fails
       let tx;
+      const txOptions = { value: valueToSend };
+      
       try {
-        tx = await contract.buyPresale(referrer, { value: valueToSend });
-      } catch (err) {
-        console.log("Referrer call failed, trying parameterless buyPresale...");
-        tx = await contract.buyPresale({ value: valueToSend });
+        // Try to estimate gas first to see if it will fail
+        try {
+          const gasEstimate = await contract.buyPresale.estimateGas(referrer, txOptions);
+          (txOptions as any).gasLimit = (gasEstimate * 120n) / 100n; // Add 20% buffer
+        } catch (estErr) {
+          console.warn("Gas estimation failed, using default gas limit", estErr);
+          (txOptions as any).gasLimit = 300000n; 
+        }
+
+        // Try calling with referrer
+        tx = await contract.buyPresale(referrer, txOptions);
+      } catch (err: any) {
+        console.log("Referrer call failed, trying parameterless buyPresale...", err.message);
+        try {
+          tx = await contract.buyPresale(txOptions);
+        } catch (err2: any) {
+          console.log("buyPresale failed, trying generic 'buy' function...", err2.message);
+          const genericContract = new Contract(CONTRACT_ADDRESS, [
+            "function buy() payable",
+            "function buy(address referrer) payable"
+          ], signer);
+          try {
+            tx = await genericContract.buy(referrer, txOptions);
+          } catch (err3) {
+            tx = await genericContract.buy(txOptions);
+          }
+        }
       }
       
-      console.log("Transaction sent:", tx.hash);
+      console.log("Transaction sent! Hash:", tx.hash);
+      showNotify("Transaction sent! Please wait for confirmation.", "info");
       await tx.wait();
       console.log("Transaction confirmed!");
+      showNotify("Purchase successful!", "success");
       
       setPurchaseSuccess(true);
     } catch (error: any) {
-      console.error("Presale Error:", error);
-      alert(error.reason || error.message || "Transaction failed. Please check your balance and network.");
+      console.error("Detailed Presale Error:", error);
+      const msg = error.reason || error.message || "Transaction failed";
+      showNotify(msg, "error");
     } finally {
       setLoading(false);
     }
@@ -516,11 +547,12 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
             },
           },
         });
-      } catch (error) {
+      } catch (error: any) {
         console.error(error);
+        showNotify(error.message || "Failed to add token", "error");
       }
     } else {
-      alert("Please install MetaMask or a compatible wallet.");
+      showNotify("Please install MetaMask or a compatible wallet.", "error");
     }
   };
 
@@ -640,8 +672,8 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
   );
 };
 
-const ReferralDashboard = ({ onConnect, walletConnected }: { onConnect: () => void, walletConnected: boolean }) => {
-  const referralLink = `https://universe-ai.io/?ref=0x123...abc`;
+const ReferralDashboard = ({ onConnect, walletConnected, userAddress, showNotify }: { onConnect: () => void, walletConnected: boolean, userAddress: string, showNotify: (m: string, t?: any) => void }) => {
+  const referralLink = `https://universe-ai.io/?ref=${walletConnected ? userAddress : "0x000...000"}`;
   
   const handleCopy = () => {
     if (!walletConnected) {
@@ -649,7 +681,7 @@ const ReferralDashboard = ({ onConnect, walletConnected }: { onConnect: () => vo
       return;
     }
     navigator.clipboard.writeText(referralLink);
-    alert("Referral link copied!");
+    showNotify("Referral link copied!", "success");
   };
 
   return (
@@ -708,7 +740,7 @@ const ReferralDashboard = ({ onConnect, walletConnected }: { onConnect: () => vo
   );
 };
 
-const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, walletConnected: boolean }) => {
+const Airdrop = ({ onConnect, walletConnected, showNotify }: { onConnect: () => void, walletConnected: boolean, showNotify: (m: string, t?: any) => void }) => {
   const [claimed, setClaimed] = useState(false);
   const [loading, setLoading] = useState(false);
   
@@ -720,6 +752,7 @@ const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
     
     setLoading(true);
     try {
+      console.log("Starting airdrop claim...");
       if (!window.ethereum) throw new Error("No crypto wallet found");
       
       const provider = new BrowserProvider(window.ethereum);
@@ -727,16 +760,41 @@ const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
       const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       
       console.log("Initiating claimAirdrop transaction...");
-      const tx = await contract.claimAirdrop();
-      console.log("Transaction sent:", tx.hash);
+      showNotify("Preparing claim...", "info");
       
+      let tx;
+      try {
+        // Estimate gas
+        let gasLimit;
+        try {
+          gasLimit = await contract.claimAirdrop.estimateGas();
+          gasLimit = (gasLimit * 120n) / 100n;
+        } catch (e) {
+          gasLimit = 200000n;
+        }
+
+        tx = await contract.claimAirdrop({ gasLimit });
+      } catch (err: any) {
+        console.log("claimAirdrop failed, trying generic 'claim' function...", err.message);
+        const genericContract = new Contract(CONTRACT_ADDRESS, ["function claim()"], signer);
+        try {
+          tx = await genericContract.claim({ gasLimit: 200000n });
+        } catch (err2: any) {
+          throw new Error("Contract does not support claimAirdrop or claim functions.");
+        }
+      }
+      
+      console.log("Transaction sent! Hash:", tx.hash);
+      showNotify("Transaction sent! Please wait for confirmation.", "info");
       await tx.wait();
       console.log("Airdrop claimed!");
+      showNotify("Airdrop claimed successfully!", "success");
       
       setClaimed(true);
     } catch (error: any) {
-      console.error("Airdrop Error:", error);
-      alert(error.reason || error.message || "Claim failed. You may have already claimed or the airdrop is paused.");
+      console.error("Detailed Airdrop Error:", error);
+      const msg = error.reason || error.message || "Claim failed";
+      showNotify(msg, "error");
     } finally {
       setLoading(false);
     }
@@ -1255,6 +1313,12 @@ export default function App() {
   const [userAddress, setUserAddress] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [currentPage, setCurrentPage] = useState('home');
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showNotify = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 5000);
+  };
 
   const handleConnect = () => {
     setShowModal(true);
@@ -1352,9 +1416,9 @@ export default function App() {
               <Hero />
               <Partners />
               <AboutSection />
-              <Presale onConnect={handleConnect} walletConnected={walletConnected} />
-              <ReferralDashboard onConnect={handleConnect} walletConnected={walletConnected} />
-              <Airdrop onConnect={handleConnect} walletConnected={walletConnected} />
+              <Presale onConnect={handleConnect} walletConnected={walletConnected} showNotify={showNotify} />
+              <ReferralDashboard onConnect={handleConnect} walletConnected={walletConnected} userAddress={userAddress} showNotify={showNotify} />
+              <Airdrop onConnect={handleConnect} walletConnected={walletConnected} showNotify={showNotify} />
               <Tokenomics />
               <Roadmap />
               <FAQ />
@@ -1366,6 +1430,32 @@ export default function App() {
       </main>
 
       <Footer />
+
+      {/* Notification Toast */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            className={`fixed bottom-24 left-1/2 z-[200] px-6 py-3 rounded-2xl border backdrop-blur-xl shadow-2xl flex items-center gap-3 min-w-[300px] ${
+              notification.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-500' :
+              notification.type === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-500' :
+              'bg-gold/10 border-gold/20 text-gold'
+            }`}
+          >
+            <div className={`w-2 h-2 rounded-full animate-pulse ${
+              notification.type === 'error' ? 'bg-red-500' :
+              notification.type === 'success' ? 'bg-green-500' :
+              'bg-gold'
+            }`} />
+            <span className="font-tech text-[10px] uppercase tracking-widest">{notification.message}</span>
+            <button onClick={() => setNotification(null)} className="ml-auto opacity-50 hover:opacity-100">
+              <X size={14} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Wallet Modal */}
       <AnimatePresence>
