@@ -57,17 +57,26 @@ const CONTRACT_ABI = [
 		"inputs": [],
 		"name": "latestRoundData",
 		"outputs": [
-			{ "internalType": "uint80", "name": "", "type": "uint80" },
+			{ "internalType": "uint80", "name": "roundId", "type": "uint80" },
 			{ "internalType": "int256", "name": "price", "type": "int256" },
-			{ "internalType": "uint256", "name": "", "type": "uint256" },
-			{ "internalType": "uint256", "name": "", "type": "uint256" },
-			{ "internalType": "uint80", "name": "", "type": "uint80" }
+			{ "internalType": "uint256", "name": "startedAt", "type": "uint256" },
+			{ "internalType": "uint256", "name": "updatedAt", "type": "uint256" },
+			{ "internalType": "uint80", "name": "answeredInRound", "type": "uint80" }
 		],
 		"stateMutability": "view",
 		"type": "function"
 	},
   {
     "inputs": [],
+    "name": "buyPresale",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_referrer", "type": "address" }
+    ],
     "name": "buyPresale",
     "outputs": [],
     "stateMutability": "payable",
@@ -442,25 +451,51 @@ const Presale = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
 
     setLoading(true);
     try {
+      if (!window.ethereum) throw new Error("No crypto wallet found");
+      
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       
-      // Assuming 1 BNB = some USD, but for now we send the equivalent in BNB if the contract expects BNB
-      // Or if the contract expects a specific value. 
-      // Since we don't have the price feed logic here, we'll assume the user sends BNB.
-      // But the UI says USD. We'll assume the contract handles the conversion or we need to fetch it.
+      // 1. Get BNB Price (Fallback to 600 if call fails)
+      let bnbPrice = 600;
+      try {
+        console.log("Fetching BNB price...");
+        const roundData = await contract.latestRoundData();
+        bnbPrice = Number(roundData.price) / 1e8;
+        console.log("Current BNB Price:", bnbPrice);
+      } catch (priceError) {
+        console.warn("Could not fetch price from contract, using fallback $600", priceError);
+      }
+
+      // 2. Calculate BNB amount
+      const bnbNeeded = parseFloat(usdAmount) / bnbPrice;
+      const valueToSend = parseEther(bnbNeeded.toFixed(18));
+      console.log(`Sending ${bnbNeeded} BNB for $${usdAmount}`);
+
+      // 3. Get Referrer
+      const urlParams = new URLSearchParams(window.location.search);
+      const referrer = urlParams.get('ref') || "0x0000000000000000000000000000000000000000";
       
-      // For now, let's call buyPresale with the value.
-      // We'll use a dummy conversion or just send the amount if it's meant to be BNB.
-      // Given the user's request, I'll just call the function.
-      const tx = await contract.buyPresale({ value: parseEther((parseFloat(usdAmount) / 600).toString()) }); // Dummy 600 USD/BNB conversion
+      console.log("Initiating buyPresale transaction...");
+      
+      // Try calling with referrer first, then fallback to parameterless if it fails
+      let tx;
+      try {
+        tx = await contract.buyPresale(referrer, { value: valueToSend });
+      } catch (err) {
+        console.log("Referrer call failed, trying parameterless buyPresale...");
+        tx = await contract.buyPresale({ value: valueToSend });
+      }
+      
+      console.log("Transaction sent:", tx.hash);
       await tx.wait();
+      console.log("Transaction confirmed!");
       
       setPurchaseSuccess(true);
     } catch (error: any) {
-      console.error(error);
-      alert(error.reason || error.message || "Transaction failed");
+      console.error("Presale Error:", error);
+      alert(error.reason || error.message || "Transaction failed. Please check your balance and network.");
     } finally {
       setLoading(false);
     }
@@ -685,17 +720,23 @@ const Airdrop = ({ onConnect, walletConnected }: { onConnect: () => void, wallet
     
     setLoading(true);
     try {
+      if (!window.ethereum) throw new Error("No crypto wallet found");
+      
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       const contract = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       
+      console.log("Initiating claimAirdrop transaction...");
       const tx = await contract.claimAirdrop();
+      console.log("Transaction sent:", tx.hash);
+      
       await tx.wait();
+      console.log("Airdrop claimed!");
       
       setClaimed(true);
     } catch (error: any) {
-      console.error(error);
-      alert(error.reason || error.message || "Claim failed");
+      console.error("Airdrop Error:", error);
+      alert(error.reason || error.message || "Claim failed. You may have already claimed or the airdrop is paused.");
     } finally {
       setLoading(false);
     }
@@ -1219,15 +1260,42 @@ export default function App() {
     setShowModal(true);
   };
 
+  useEffect(() => {
+    if (window.ethereum) {
+      // Check if already connected
+      window.ethereum.request({ method: 'eth_accounts' }).then((accounts: string[]) => {
+        if (accounts.length > 0) {
+          setUserAddress(accounts[0]);
+          setWalletConnected(true);
+        }
+      });
+
+      // Listen for changes
+      window.ethereum.on('accountsChanged', (accounts: string[]) => {
+        if (accounts.length > 0) {
+          setUserAddress(accounts[0]);
+          setWalletConnected(true);
+        } else {
+          setUserAddress("");
+          setWalletConnected(false);
+        }
+      });
+      
+      window.ethereum.on('chainChanged', () => {
+        window.location.reload();
+      });
+    }
+  }, []);
+
   const connectWallet = async () => {
     if (window.ethereum) {
       try {
         const provider = new BrowserProvider(window.ethereum);
-        const accounts = await provider.send("eth_requestAccounts", []);
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
         
         // Check for BSC Network
         const network = await provider.getNetwork();
-        if (network.chainId !== 56n && network.chainId !== 97n) {
+        if (network.chainId !== 56n) {
           try {
             await window.ethereum.request({
               method: 'wallet_switchEthereumChain',
@@ -1253,7 +1321,7 @@ export default function App() {
         setWalletConnected(true);
         setShowModal(false);
       } catch (error) {
-        console.error(error);
+        console.error("Connection Error:", error);
         alert("Failed to connect wallet");
       }
     } else {
