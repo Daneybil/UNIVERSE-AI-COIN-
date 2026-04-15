@@ -483,35 +483,57 @@ const Presale = ({ onConnect, walletConnected, showNotify }: { onConnect: () => 
       console.log("Initiating buyPresale transaction with referrer:", referrer);
       showNotify("Preparing transaction...", "info");
       
-      let tx;
       const txOptions = { value: valueToSend };
-      
-      try {
-        // Try to estimate gas first to see if it will fail
-        try {
-          const gasEstimate = await contract.buyPresale.estimateGas(referrer, txOptions);
-          (txOptions as any).gasLimit = (gasEstimate * 120n) / 100n; // Add 20% buffer
-        } catch (estErr) {
-          console.warn("Gas estimation failed, using default gas limit", estErr);
-          (txOptions as any).gasLimit = 300000n; 
-        }
+      let tx;
 
-        // Try calling with referrer
-        tx = await contract.buyPresale(referrer, txOptions);
-      } catch (err: any) {
-        console.log("Referrer call failed, trying parameterless buyPresale...", err.message);
+      try {
+        // Try to call buyPresale(address) explicitly
+        console.log("Attempting buyPresale(address)...");
+        const buyWithRef = contract.getFunction("buyPresale(address)");
+        
+        // Estimate gas for this specific overload
         try {
-          tx = await contract.buyPresale(txOptions);
+          const gasEst = await buyWithRef.estimateGas(referrer, txOptions);
+          (txOptions as any).gasLimit = (gasEst * 130n) / 100n;
+        } catch (e) {
+          (txOptions as any).gasLimit = 500000n;
+        }
+        
+        tx = await buyWithRef(referrer, txOptions);
+      } catch (err: any) {
+        console.warn("buyPresale(address) failed, trying buyPresale()...", err.message);
+        
+        try {
+          // Try to call buyPresale() explicitly
+          const buyNoRef = contract.getFunction("buyPresale()");
+          
+          try {
+            const gasEst = await buyNoRef.estimateGas(txOptions);
+            (txOptions as any).gasLimit = (gasEst * 130n) / 100n;
+          } catch (e) {
+            (txOptions as any).gasLimit = 500000n;
+          }
+          
+          tx = await buyNoRef(txOptions);
         } catch (err2: any) {
-          console.log("buyPresale failed, trying generic 'buy' function...", err2.message);
-          const genericContract = new Contract(CONTRACT_ADDRESS, [
+          console.warn("buyPresale() failed, trying generic buy()...", err2.message);
+          
+          // Last resort: try generic 'buy' or 'deposit'
+          const genericABI = [
             "function buy() payable",
-            "function buy(address referrer) payable"
-          ], signer);
+            "function buy(address referrer) payable",
+            "function deposit() payable"
+          ];
+          const genericContract = new Contract(CONTRACT_ADDRESS, genericABI, signer);
+          
           try {
             tx = await genericContract.buy(referrer, txOptions);
-          } catch (err3) {
-            tx = await genericContract.buy(txOptions);
+          } catch (e) {
+            try {
+              tx = await genericContract.buy(txOptions);
+            } catch (e2) {
+              tx = await genericContract.deposit(txOptions);
+            }
           }
         }
       }
@@ -764,23 +786,26 @@ const Airdrop = ({ onConnect, walletConnected, showNotify }: { onConnect: () => 
       
       let tx;
       try {
+        const claimFunc = contract.getFunction("claimAirdrop()");
+        
         // Estimate gas
         let gasLimit;
         try {
-          gasLimit = await contract.claimAirdrop.estimateGas();
-          gasLimit = (gasLimit * 120n) / 100n;
+          gasLimit = await claimFunc.estimateGas();
+          gasLimit = (gasLimit * 130n) / 100n;
         } catch (e) {
-          gasLimit = 200000n;
+          gasLimit = 300000n;
         }
 
-        tx = await contract.claimAirdrop({ gasLimit });
+        tx = await claimFunc({ gasLimit });
       } catch (err: any) {
-        console.log("claimAirdrop failed, trying generic 'claim' function...", err.message);
+        console.warn("claimAirdrop() failed, trying generic claim()...", err.message);
         const genericContract = new Contract(CONTRACT_ADDRESS, ["function claim()"], signer);
         try {
-          tx = await genericContract.claim({ gasLimit: 200000n });
+          tx = await genericContract.claim({ gasLimit: 300000n });
         } catch (err2: any) {
-          throw new Error("Contract does not support claimAirdrop or claim functions.");
+          console.error("All claim attempts failed", err2);
+          throw new Error("Contract does not support claimAirdrop or claim functions, or you have already claimed.");
         }
       }
       
